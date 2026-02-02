@@ -7,6 +7,8 @@ export interface FileNode {
 	name: string;
 	path: string;
 	type: 'file' | 'folder';
+	isText?: boolean;
+	lineCount?: number;
 	children?: FileNode[];
 }
 
@@ -23,35 +25,126 @@ export async function isGitRepository(workspaceFolder: vscode.WorkspaceFolder): 
 	}
 }
 
+type IgnoreEntry = {
+	base: string;
+	matcher: Ignore;
+};
+
 /**
- * 读取 .gitignore 规则
+ * 创建根目录的忽略规则（含默认规则与根 .gitignore）
  */
-async function loadGitignore(rootPath: string): Promise<Ignore> {
+async function loadRootIgnore(rootPath: string): Promise<IgnoreEntry> {
 	const gitignorePath = path.join(rootPath, '.gitignore');
-	const ig = ignore();
-	
+	const matcher = ignore();
+
+	// 默认忽略
+	matcher.add('.git');
+	matcher.add('node_modules');
+	matcher.add('.vscode');
+	matcher.add('pnpm-lock.yaml');
+	matcher.add('yarn.lock');
+	matcher.add('package-lock.json');
+
 	try {
 		const content = await fs.promises.readFile(gitignorePath, 'utf-8');
-		ig.add(content);
+		matcher.add(content);
 	} catch {
-		// 如果没有 .gitignore 文件，返回空的 ignore 实例
+		// 如果没有 .gitignore 文件，返回默认规则
 	}
-	
-	// 默认忽略 .git 目录
-	ig.add('.git');
-	ig.add('node_modules');
-	ig.add('.vscode');
-	
-	return ig;
+
+	return { base: rootPath, matcher };
 }
 
 /**
- * 检查路径是否应该被忽略
+ * 读取指定目录下的 .gitignore（若存在）
  */
-function shouldIgnore(relativePath: string, ig: Ignore): boolean {
-	// 将路径转换为 Unix 风格（ignore 库需要）
-	const normalizedPath = relativePath.replace(/\\/g, '/');
-	return ig.ignores(normalizedPath);
+async function loadLocalIgnore(dirPath: string): Promise<Ignore | null> {
+	const gitignorePath = path.join(dirPath, '.gitignore');
+	try {
+		const content = await fs.promises.readFile(gitignorePath, 'utf-8');
+		const matcher = ignore();
+		matcher.add(content);
+		return matcher;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * 检查路径是否应该被忽略（支持多层 .gitignore）
+ */
+function shouldIgnorePath(absPath: string, isDir: boolean, stack: IgnoreEntry[]): boolean {
+	let ignored = false;
+	for (const entry of stack) {
+		let relativePath = path.relative(entry.base, absPath);
+		// 不在该 base 下时跳过
+		if (relativePath.startsWith('..')) {
+			continue;
+		}
+		relativePath = relativePath.replace(/\\/g, '/');
+		if (isDir && !relativePath.endsWith('/')) {
+			relativePath += '/';
+		}
+		const result = entry.matcher.test(relativePath);
+		if (result.ignored) {
+			ignored = true;
+		}
+		if (result.unignored) {
+			ignored = false;
+		}
+	}
+	return ignored;
+}
+
+/**
+ * 判断文件是否为文本文件（通过检测 NUL 字节）
+ */
+async function isTextFile(filePath: string): Promise<boolean> {
+	try {
+		const file = await fs.promises.open(filePath, 'r');
+		const buffer = Buffer.alloc(8192);
+		const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+		await file.close();
+
+		for (let i = 0; i < bytesRead; i++) {
+			if (buffer[i] === 0) {
+				return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * 统计文本文件行数（按换行符计数）
+ */
+async function countLines(filePath: string): Promise<number> {
+	return new Promise((resolve, reject) => {
+		let lineCount = 0;
+		let hasData = false;
+		let lastByte: number | null = null;
+
+		const stream = fs.createReadStream(filePath);
+		stream.on('data', (chunk: Buffer | string) => {
+			const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			hasData = true;
+			for (let i = 0; i < buffer.length; i++) {
+				if (buffer[i] === 10) {
+					lineCount++;
+				}
+			}
+			lastByte = buffer[buffer.length - 1];
+		});
+		stream.on('end', () => {
+			if (hasData && lastByte !== 10) {
+				lineCount++;
+			}
+			resolve(lineCount);
+		});
+		stream.on('error', reject);
+	});
 }
 
 /**
@@ -66,10 +159,14 @@ export async function buildFileTree(workspaceFolder: vscode.WorkspaceFolder): Pr
 		return null;
 	}
 	
-	// 加载 .gitignore 规则
-	const ig = await loadGitignore(rootPath);
+	// 加载根目录 .gitignore 规则
+	const rootIgnore = await loadRootIgnore(rootPath);
 	
-	async function buildNode(currentPath: string, relativePath: string = ''): Promise<FileNode | null> {
+	async function buildNode(
+		currentPath: string,
+		relativePath: string = '',
+		ignoreStack: IgnoreEntry[] = [rootIgnore]
+	): Promise<FileNode | null> {
 		let stat: fs.Stats;
 		try {
 			stat = await fs.promises.stat(currentPath);
@@ -81,10 +178,16 @@ export async function buildFileTree(workspaceFolder: vscode.WorkspaceFolder): Pr
 		
 		if (stat.isDirectory()) {
 			// 检查目录是否应该被忽略
-			if (relativePath && shouldIgnore(relativePath + '/', ig)) {
+			if (relativePath && shouldIgnorePath(currentPath, true, ignoreStack)) {
 				return null;
 			}
-			
+
+			// 读取当前目录的 .gitignore（若存在），并加入栈
+			const localIgnore = await loadLocalIgnore(currentPath);
+			const nextStack = localIgnore
+				? [...ignoreStack, { base: currentPath, matcher: localIgnore }]
+				: ignoreStack;
+
 			const children: FileNode[] = [];
 			let entries: string[];
 			try {
@@ -98,13 +201,8 @@ export async function buildFileTree(workspaceFolder: vscode.WorkspaceFolder): Pr
 			for (const entry of entries) {
 				const entryPath = path.join(currentPath, entry);
 				const entryRelativePath = relativePath ? path.join(relativePath, entry) : entry;
-				
-				// 检查是否应该被忽略
-				if (shouldIgnore(entryRelativePath, ig)) {
-					continue;
-				}
-				
-				const childNode = await buildNode(entryPath, entryRelativePath);
+
+				const childNode = await buildNode(entryPath, entryRelativePath, nextStack);
 				if (childNode) {
 					children.push(childNode);
 				}
@@ -126,14 +224,19 @@ export async function buildFileTree(workspaceFolder: vscode.WorkspaceFolder): Pr
 			};
 		} else {
 			// 文件
-			if (shouldIgnore(relativePath, ig)) {
+			if (shouldIgnorePath(currentPath, false, ignoreStack)) {
 				return null;
 			}
-			
+
+			const textFile = await isTextFile(currentPath);
+			const lineCount = textFile ? await countLines(currentPath) : undefined;
+
 			return {
 				name: path.basename(currentPath),
 				path: currentPath,
-				type: 'file'
+				type: 'file',
+				isText: textFile,
+				lineCount: lineCount
 			};
 		}
 	}
