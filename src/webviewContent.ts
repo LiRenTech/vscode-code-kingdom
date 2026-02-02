@@ -3,8 +3,9 @@ import { FileNode } from './fileTree';
 /**
  * 生成 webview 的 HTML 内容
  */
-export function getWebviewContent(fileTree: FileNode): string {
+export function getWebviewContent(fileTree: FileNode, authorColors: Record<string, string> = {}): string {
 	const treeJson = JSON.stringify(fileTree).replace(/</g, '\\u003c');
+	const colorJson = JSON.stringify(authorColors).replace(/</g, '\\u003c');
 
 	return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -52,6 +53,7 @@ export function getWebviewContent(fileTree: FileNode): string {
 	<div class="hint">拖拽平移 · 滚轮缩放 · 双击重置</div>
 	<script>
 		const treeData = ${treeJson};
+		const authorColors = ${colorJson};
 
 		const CONFIG = {
 			fileWidth: 80,
@@ -169,20 +171,48 @@ export function getWebviewContent(fileTree: FileNode): string {
 				ctx.strokeRect(x, y, node.width, node.height);
 
 				ctx.fillStyle = CONFIG.textColor;
-				ctx.font = \`\${CONFIG.labelFontSize}px sans-serif\`;
+				ctx.font = CONFIG.labelFontSize + 'px sans-serif';
 				ctx.fillText(node.name, x + 4, y + CONFIG.headerHeight - 4);
 
 				for (const child of node.children || []) {
 					drawNode(child, x + child.x, y + child.y);
 				}
 			} else {
-				ctx.fillStyle = CONFIG.fileFill;
+				if (node.blameSegments && node.blameSegments.length > 0) {
+					drawBlameSegments(node, x, y);
+				} else {
+					ctx.fillStyle = CONFIG.fileFill;
+					ctx.fillRect(x, y, node.width, node.height);
+				}
 				ctx.strokeStyle = CONFIG.fileStroke;
-				ctx.fillRect(x, y, node.width, node.height);
 				ctx.strokeRect(x, y, node.width, node.height);
 
 				drawFileLabel(node.name, x, y, node.width, node.height);
 			}
+		}
+
+		function drawBlameSegments(node, x, y) {
+			const segments = node.blameSegments || [];
+			const totalLines = segments.reduce((sum, seg) => sum + seg.lines, 0) || 1;
+			let offsetY = y;
+			for (const seg of segments) {
+				const height = (seg.lines / totalLines) * node.height;
+				ctx.fillStyle = colorForAuthor(seg.author);
+				ctx.fillRect(x, offsetY, node.width, height);
+				offsetY += height;
+			}
+		}
+
+		function colorForAuthor(author) {
+			if (authorColors && authorColors[author]) {
+				return authorColors[author];
+			}
+			let hash = 0;
+			for (let i = 0; i < author.length; i++) {
+				hash = (hash * 31 + author.charCodeAt(i)) | 0;
+			}
+			const hue = Math.abs(hash) % 360;
+			return 'hsl(' + hue + ', 55%, 45%)';
 		}
 
 		function drawFileLabel(name, x, y, width, height) {
@@ -197,7 +227,7 @@ export function getWebviewContent(fileTree: FileNode): string {
 			ctx.clip();
 
 			ctx.fillStyle = CONFIG.textColor;
-			ctx.font = \`\${fontSize}px sans-serif\`;
+			ctx.font = fontSize + 'px sans-serif';
 
 			const words = name.split(/([._-])/).filter(Boolean);
 			const lines = [];

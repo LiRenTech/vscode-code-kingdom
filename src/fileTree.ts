@@ -2,6 +2,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import ignore, { type Ignore } from 'ignore';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
+
+export type BlameSegment = {
+	author: string;
+	lines: number;
+};
+
+export type AuthorColorMap = Record<string, string>;
 
 export interface FileNode {
 	name: string;
@@ -9,6 +20,7 @@ export interface FileNode {
 	type: 'file' | 'folder';
 	isText?: boolean;
 	lineCount?: number;
+	blameSegments?: BlameSegment[];
 	children?: FileNode[];
 }
 
@@ -145,6 +157,117 @@ async function countLines(filePath: string): Promise<number> {
 		});
 		stream.on('error', reject);
 	});
+}
+
+/**
+ * 获取 git blame 作者段信息（按连续作者分段）
+ */
+async function getBlameSegments(filePath: string, repoRoot: string): Promise<BlameSegment[] | null> {
+	try {
+		const { stdout } = await execFileAsync('git', [
+			'-C',
+			repoRoot,
+			'blame',
+			'--line-porcelain',
+			'--',
+			filePath
+		]);
+
+		const authors: string[] = [];
+		let currentAuthor = '';
+		const lines = stdout.split('\n');
+		for (const line of lines) {
+			if (line.startsWith('author ')) {
+				currentAuthor = line.slice('author '.length).trim() || 'Unknown';
+			} else if (line.startsWith('\t')) {
+				authors.push(currentAuthor || 'Unknown');
+			}
+		}
+
+		if (authors.length === 0) {
+			return null;
+		}
+
+		const segments: BlameSegment[] = [];
+		let last = authors[0];
+		let count = 1;
+		for (let i = 1; i < authors.length; i++) {
+			const author = authors[i];
+			if (author === last) {
+				count++;
+			} else {
+				segments.push({ author: last, lines: count });
+				last = author;
+				count = 1;
+			}
+		}
+		segments.push({ author: last, lines: count });
+		return segments;
+	} catch {
+		// 未跟踪文件、二进制文件或其他错误时直接跳过
+		return null;
+	}
+}
+
+function collectFileNodes(root: FileNode): FileNode[] {
+	const files: FileNode[] = [];
+	const stack: FileNode[] = [root];
+	while (stack.length > 0) {
+		const node = stack.pop();
+		if (!node) continue;
+		if (node.type === 'file') {
+			files.push(node);
+		} else if (node.children) {
+			for (const child of node.children) {
+				stack.push(child);
+			}
+		}
+	}
+	return files;
+}
+
+export async function addBlameInfo(
+	root: FileNode,
+	repoRoot: string,
+	onProgress?: (done: number, total: number, filePath: string) => void
+): Promise<void> {
+	const files = collectFileNodes(root);
+	const total = files.length;
+	let done = 0;
+
+	for (const file of files) {
+		done++;
+		onProgress?.(done, total, file.path);
+
+		if (!file.isText) {
+			continue;
+		}
+		const segments = await getBlameSegments(file.path, repoRoot);
+		if (segments && segments.length > 0) {
+			file.blameSegments = segments;
+		}
+	}
+}
+
+export function collectAuthors(root: FileNode): string[] {
+	const authors = new Set<string>();
+	const stack: FileNode[] = [root];
+	while (stack.length > 0) {
+		const node = stack.pop();
+		if (!node) continue;
+		if (node.type === 'file' && node.blameSegments) {
+			for (const seg of node.blameSegments) {
+				if (seg.author) {
+					authors.add(seg.author);
+				}
+			}
+		} else if (node.children) {
+			for (const child of node.children) {
+				stack.push(child);
+			}
+		}
+	}
+	return Array.from(authors).sort((a, b) => a.localeCompare(b));
 }
 
 /**

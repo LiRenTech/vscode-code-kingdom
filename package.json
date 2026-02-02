@@ -19,6 +19,11 @@
         "command": "code-kingdom.showFileTree",
         "title": "显示文件树",
         "icon": "$(list-tree)"
+      },
+      {
+        "command": "code-kingdom.configureAuthorColors",
+        "title": "配置作者颜色",
+        "icon": "$(symbol-color)"
       }
     ],
     "viewsContainers": {
@@ -43,6 +48,11 @@
       "view/title": [
         {
           "command": "code-kingdom.showFileTree",
+          "when": "view == code-kingdom-view",
+          "group": "navigation"
+        },
+        {
+          "command": "code-kingdom.configureAuthorColors",
           "when": "view == code-kingdom-view",
           "group": "navigation"
         }
