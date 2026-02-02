@@ -1,0 +1,78 @@
+{
+  "name": "code-kingdom",
+  "displayName": "Code Kingdom",
+  "description": "A VSCode extension",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "code-kingdom.showFileTree",
+        "title": "显示文件树",
+        "icon": "$(list-tree)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "code-kingdom",
+          "title": "Code Kingdom",
+          "icon": "$(list-tree)"
+        }
+      ]
+    },
+    "views": {
+      "code-kingdom": [
+        {
+          "id": "code-kingdom-view",
+          "name": "文件树",
+          "when": "true"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "code-kingdom.showFileTree",
+          "when": "view == code-kingdom-view",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "code-kingdom.showFileTree",
+          "when": "view == code-kingdom-view",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "pnpm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "pnpm run compile && pnpm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2"
+  },
+  "dependencies": {
+    "ignore": "^5.2.4"
+  }
+}
