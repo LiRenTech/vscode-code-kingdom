@@ -95,31 +95,94 @@ export function getWebviewContent(fileTree: FileNode, authorColors: Record<strin
 			return { width: CONFIG.fileWidth, height: lines };
 		}
 
-		function packShelves(rects, targetWidth) {
-			let x = 0;
-			let y = 0;
-			let rowHeight = 0;
-			let maxWidth = 0;
+		function packMaxRects(rects, targetWidth) {
+			const totalHeight = rects.reduce((sum, r) => sum + r.height, 0) + rects.length * CONFIG.gap;
+			const freeRects = [{ x: 0, y: 0, width: targetWidth, height: totalHeight }];
 			const placed = [];
 
-			for (const rect of rects) {
-				if (x > 0 && x + rect.width > targetWidth) {
-					y += rowHeight + CONFIG.gap;
-					maxWidth = Math.max(maxWidth, x - CONFIG.gap);
-					x = 0;
-					rowHeight = 0;
+			const sorted = rects.slice().sort((a, b) => {
+				const aMax = Math.max(a.width, a.height);
+				const bMax = Math.max(b.width, b.height);
+				return bMax - aMax;
+			});
+
+			for (const rect of sorted) {
+				let bestIndex = -1;
+				let bestScore = Infinity;
+				for (let i = 0; i < freeRects.length; i++) {
+					const fr = freeRects[i];
+					if (rect.width <= fr.width && rect.height <= fr.height) {
+						const leftoverX = fr.width - rect.width;
+						const leftoverY = fr.height - rect.height;
+						const score = Math.min(leftoverX, leftoverY);
+						if (score < bestScore) {
+							bestScore = score;
+							bestIndex = i;
+						}
+					}
 				}
-				placed.push({ ...rect, x, y });
-				x += rect.width + CONFIG.gap;
-				rowHeight = Math.max(rowHeight, rect.height);
+
+				if (bestIndex === -1) {
+					// 放不下时扩展高度
+					const extendRect = { x: 0, y: totalHeight, width: targetWidth, height: rect.height + CONFIG.gap };
+					freeRects.push(extendRect);
+					bestIndex = freeRects.length - 1;
+				}
+
+				const target = freeRects[bestIndex];
+				const placedRect = { ...rect, x: target.x, y: target.y };
+				placed.push(placedRect);
+
+				freeRects.splice(bestIndex, 1);
+
+				const right = {
+					x: target.x + rect.width + CONFIG.gap,
+					y: target.y,
+					width: target.width - rect.width - CONFIG.gap,
+					height: rect.height
+				};
+				const bottom = {
+					x: target.x,
+					y: target.y + rect.height + CONFIG.gap,
+					width: target.width,
+					height: target.height - rect.height - CONFIG.gap
+				};
+
+				if (right.width > 0 && right.height > 0) {
+					freeRects.push(right);
+				}
+				if (bottom.width > 0 && bottom.height > 0) {
+					freeRects.push(bottom);
+				}
+
+				pruneFreeRects(freeRects);
 			}
 
-			if (x > 0) {
-				maxWidth = Math.max(maxWidth, x - CONFIG.gap);
+			let maxX = 0;
+			let maxY = 0;
+			for (const rect of placed) {
+				maxX = Math.max(maxX, rect.x + rect.width);
+				maxY = Math.max(maxY, rect.y + rect.height);
 			}
 
-			const totalHeight = y + rowHeight;
-			return { width: maxWidth, height: totalHeight, children: placed };
+			return { width: maxX, height: maxY, children: placed };
+		}
+
+		function pruneFreeRects(freeRects) {
+			for (let i = freeRects.length - 1; i >= 0; i--) {
+				const a = freeRects[i];
+				for (let j = 0; j < freeRects.length; j++) {
+					if (i === j) continue;
+					const b = freeRects[j];
+					if (a.x >= b.x &&
+						a.y >= b.y &&
+						a.x + a.width <= b.x + b.width &&
+						a.y + a.height <= b.y + b.height) {
+						freeRects.splice(i, 1);
+						break;
+					}
+				}
+			}
 		}
 
 		function pickBestPacking(rects) {
@@ -130,7 +193,7 @@ export function getWebviewContent(fileTree: FileNode, authorColors: Record<strin
 
 			let best = null;
 			for (const target of candidates) {
-				const packed = packShelves(rects, target);
+				const packed = packMaxRects(rects, target);
 				const area = packed.width * packed.height;
 				const score = Math.abs(packed.width - packed.height) + 0.02 * (area - totalArea);
 				if (!best || score < best.score) {
@@ -138,7 +201,7 @@ export function getWebviewContent(fileTree: FileNode, authorColors: Record<strin
 				}
 			}
 
-			return best || packShelves(rects, base);
+			return best || packMaxRects(rects, base);
 		}
 
 		function computeLayout(node) {
