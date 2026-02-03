@@ -13,16 +13,25 @@ export class CodeKingdomTreeDataProvider implements vscode.TreeDataProvider<vsco
 	}
 
 	getChildren(element?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
-		// 返回一个按钮项
-		const buttonItem = new vscode.TreeItem('显示文件树', vscode.TreeItemCollapsibleState.None);
-		buttonItem.command = {
+		// 返回按钮项
+		const mapItem = new vscode.TreeItem('显示开发人员势力图', vscode.TreeItemCollapsibleState.None);
+		mapItem.command = {
 			command: 'code-kingdom.showFileTree',
-			title: '显示文件树',
-			tooltip: '点击打开文件树视图'
+			title: '显示开发人员势力图',
+			tooltip: '点击打开开发人员势力图'
 		};
-		buttonItem.iconPath = new vscode.ThemeIcon('list-tree');
-		buttonItem.tooltip = '点击打开文件树视图';
+		mapItem.iconPath = new vscode.ThemeIcon('graph');
+		mapItem.tooltip = '点击打开开发人员势力图';
 
-		return Promise.resolve([buttonItem]);
+		const colorItem = new vscode.TreeItem('配置作者颜色', vscode.TreeItemCollapsibleState.None);
+		colorItem.command = {
+			command: 'code-kingdom.configureAuthorColors',
+			title: '配置作者颜色',
+			tooltip: '点击配置作者颜色'
+		};
+		colorItem.iconPath = new vscode.ThemeIcon('color-mode');
+		colorItem.tooltip = '点击配置作者颜色';
+
+		return Promise.resolve([mapItem, colorItem]);
 	}
 }

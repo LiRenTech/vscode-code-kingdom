@@ -17,13 +17,13 @@
     "commands": [
       {
         "command": "code-kingdom.showFileTree",
-        "title": "显示文件树",
-        "icon": "$(list-tree)"
+        "title": "显示开发人员势力图",
+        "icon": "$(graph)"
       },
       {
         "command": "code-kingdom.configureAuthorColors",
         "title": "配置作者颜色",
-        "icon": "$(symbol-color)"
+        "icon": "$(color-mode)"
       }
     ],
     "viewsContainers": {
@@ -31,7 +31,7 @@
         {
           "id": "code-kingdom",
           "title": "Code Kingdom",
-          "icon": "$(list-tree)"
+          "icon": "resources/code-kingdom.svg"
         }
       ]
     },
@@ -48,11 +48,6 @@
       "view/title": [
         {
           "command": "code-kingdom.showFileTree",
-          "when": "view == code-kingdom-view",
-          "group": "navigation"
-        },
-        {
-          "command": "code-kingdom.configureAuthorColors",
           "when": "view == code-kingdom-view",
           "group": "navigation"
         }
