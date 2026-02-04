@@ -371,3 +371,15 @@ export async function buildFileTree(workspaceFolder: vscode.WorkspaceFolder): Pr
 	}
 	return rootNode;
 }
+
+/**
+ * 获取当前 git 仓库的 HEAD commit hash
+ */
+export async function getCurrentCommitHash(repoRoot: string): Promise<string | null> {
+	try {
+		const { stdout } = await execFileAsync('git', ['-C', repoRoot, 'rev-parse', 'HEAD']);
+		return stdout.trim();
+	} catch {
+		return null;
+	}
+}

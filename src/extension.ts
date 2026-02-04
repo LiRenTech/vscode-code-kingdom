@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { addBlameInfo, buildFileTree, collectAuthors, isGitRepository, type AuthorColorMap, type FileNode } from './fileTree';
+import { addBlameInfo, buildFileTree, collectAuthors, getCurrentCommitHash, isGitRepository, type AuthorColorMap, type FileNode } from './fileTree';
+import { CacheManager } from './cacheManager';
 import { getWebviewContent } from './webviewContent';
 import { CodeKingdomTreeDataProvider } from './treeDataProvider';
 
@@ -17,7 +18,7 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 
 	// 注册显示文件树命令
-	let disposable = vscode.commands.registerCommand('code-kingdom.showFileTree', async () => {
+	const disposable = vscode.commands.registerCommand('code-kingdom.showFileTree', async () => {
 		// 获取当前工作区
 		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 		if (!workspaceFolder) {
@@ -46,8 +47,49 @@ export function activate(context: vscode.ExtensionContext) {
 		// 显示加载消息
 		panel.webview.html = getLoadingHtml();
 
-		// 构建文件树并计算 Git blame
+		// 初始化缓存管理器
+		const cacheManager = new CacheManager(context);
+		const repoRoot = workspaceFolder.uri.fsPath;
+		
 		try {
+			// 获取当前 commit hash
+			const commitHash = await getCurrentCommitHash(repoRoot);
+			let fileTree: FileNode | null = null;
+			let isCached = false;
+
+			if (commitHash) {
+				fileTree = await cacheManager.getBlameCache(commitHash);
+				if (fileTree) {
+					isCached = true;
+					console.log(`Using cached blame data for commit ${commitHash}`);
+				}
+			}
+
+			if (isCached && fileTree) {
+				// 缓存命中，直接渲染
+				lastAuthors = collectAuthors(fileTree);
+				lastFileTree = fileTree;
+				currentPanel = panel;
+				const authorColors = ensureAuthorColors(context, lastAuthors);
+				panel.webview.html = getWebviewContent(fileTree, authorColors);
+				
+				// 仍然需要重新绑定消息监听
+				panel.webview.onDidReceiveMessage(
+					message => {
+						switch (message.command) {
+							case 'openFile':
+								const fileUri = vscode.Uri.file(message.path);
+								vscode.window.showTextDocument(fileUri);
+								break;
+						}
+					},
+					undefined,
+					context.subscriptions
+				);
+				return;
+			}
+
+			// 缓存未命中或无法获取 commit hash，走完整流程
 			await vscode.window.withProgress(
 				{
 					location: vscode.ProgressLocation.Notification,
@@ -56,18 +98,23 @@ export function activate(context: vscode.ExtensionContext) {
 				},
 				async progress => {
 					progress.report({ message: '正在构建文件树...' });
-					const fileTree = await buildFileTree(workspaceFolder);
+					fileTree = await buildFileTree(workspaceFolder);
 					if (!fileTree) {
 						panel.webview.html = getErrorHtml('无法构建文件树');
 						return;
 					}
 
 					progress.report({ message: '正在计算 Git blame...' });
-					await addBlameInfo(fileTree, workspaceFolder.uri.fsPath, (done, total, filePath) => {
+					await addBlameInfo(fileTree, repoRoot, (done, total, filePath) => {
 						const percent = total > 0 ? Math.round((done / total) * 100) : 0;
 						const name = filePath.split(/[\\/]/).pop() || filePath;
 						progress.report({ message: `Git blame ${percent}% - ${name}` });
 					});
+
+					// 存入缓存
+					if (commitHash && fileTree) {
+						await cacheManager.saveBlameCache(commitHash, fileTree);
+					}
 
 					lastAuthors = collectAuthors(fileTree);
 					lastFileTree = fileTree;
@@ -81,10 +128,11 @@ export function activate(context: vscode.ExtensionContext) {
 					panel.webview.onDidReceiveMessage(
 						message => {
 							switch (message.command) {
-								case 'openFile':
+								case 'openFile': {
 									const fileUri = vscode.Uri.file(message.path);
 									vscode.window.showTextDocument(fileUri);
 									break;
+								}
 							}
 						},
 						undefined,
@@ -99,7 +147,7 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 
 	// 注册作者颜色配置命令
-	let configDisposable = vscode.commands.registerCommand('code-kingdom.configureAuthorColors', async () => {
+	const configDisposable = vscode.commands.registerCommand('code-kingdom.configureAuthorColors', async () => {
 		const panel = vscode.window.createWebviewPanel(
 			'codeKingdomAuthorColors',
 			'Code Kingdom - 作者颜色配置',
