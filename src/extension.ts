@@ -350,18 +350,29 @@ function getAuthorColorConfigHtml(authors: string[], colors: AuthorColorMap): st
 			margin-bottom: 12px;
 		}
 		.row {
-			display: flex;
+			display: inline-flex;
 			align-items: center;
-			gap: 8px;
-			margin-bottom: 8px;
+			gap: 4px;
+			margin: 4px;
+			padding: 4px 8px;
+			background: var(--vscode-editor-lineHighlightBackground);
+			border-radius: 4px;
+		}
+		.author-container {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 4px;
 		}
 		input[type="text"] {
-			flex: 1;
-			padding: 4px 6px;
+			width: auto;
+			min-width: 60px;
+			max-width: 200px;
+			padding: 2px 4px;
 			background: var(--vscode-input-background);
 			color: var(--vscode-input-foreground);
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 4px;
+			font-size: 12px;
 		}
 		.actions {
 			margin-top: 12px;
@@ -394,9 +405,9 @@ function getAuthorColorConfigHtml(authors: string[], colors: AuthorColorMap): st
 		<input type="color" id="unifyColor" value="#000000">
 		<button id="unifyBtn" class="secondary">一键应用</button>
 	</div>
-	<div id="current"></div>
+	<div id="current" class="author-container"></div>
 	<h3>曾经保存的作者配置信息</h3>
-	<div id="history"></div>
+	<div id="history" class="author-container"></div>
 	<script>
 		const vscode = acquireVsCodeApi();
 		const authors = ${authorJson};
@@ -412,31 +423,33 @@ function getAuthorColorConfigHtml(authors: string[], colors: AuthorColorMap): st
 		function createRow(name, color) {
 			const row = document.createElement('div');
 			row.className = 'row';
-			row.dataset.author = name; // 添加 data 属性方便查找
+			row.dataset.author = name;
 
+			const nameSpan = document.createElement('span');
+			nameSpan.textContent = name || '';
+			nameSpan.style.fontSize = '12px';
+			nameSpan.style.whiteSpace = 'nowrap';
+
+			// Hidden input to preserve name for saveNow
 			const nameInput = document.createElement('input');
-			nameInput.type = 'text';
-			nameInput.placeholder = '作者名';
+			nameInput.type = 'hidden';
 			nameInput.value = name || '';
 
 			const colorInput = document.createElement('input');
 			colorInput.type = 'color';
-			colorInput.className = 'color-input'; // 添加类名方便查找
+			colorInput.className = 'color-input';
 			colorInput.value = color || '#4a7bd1';
+			colorInput.style.width = '24px';
+			colorInput.style.height = '24px';
+			colorInput.style.padding = '0';
+			colorInput.style.border = 'none';
+			colorInput.style.cursor = 'pointer';
 
-			nameInput.addEventListener('input', scheduleSave);
 			colorInput.addEventListener('input', scheduleSave);
 
-			const removeButton = document.createElement('button');
-			removeButton.textContent = '删除';
-			removeButton.addEventListener('click', () => {
-				row.remove();
-				scheduleSave();
-			});
-
+			row.appendChild(nameSpan);
 			row.appendChild(nameInput);
 			row.appendChild(colorInput);
-			row.appendChild(removeButton);
 			return row;
 		}
 
