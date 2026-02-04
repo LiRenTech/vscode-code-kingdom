@@ -9,7 +9,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	let currentPanel: vscode.WebviewPanel | undefined;
 	let lastFileTree: FileNode | null = null;
-	let lastAuthors: string[] = [];
+	let lastAuthors: string[] = context.workspaceState.get<string[]>('code-kingdom.lastAuthors') || [];
 
 	// 注册 TreeDataProvider
 	const treeDataProvider = new CodeKingdomTreeDataProvider();
@@ -68,6 +68,7 @@ export function activate(context: vscode.ExtensionContext) {
 			if (isCached && fileTree) {
 				// 缓存命中，直接渲染
 				lastAuthors = collectAuthors(fileTree);
+				void context.workspaceState.update('code-kingdom.lastAuthors', lastAuthors);
 				lastFileTree = fileTree;
 				currentPanel = panel;
 				const authorColors = ensureAuthorColors(context, lastAuthors);
@@ -117,6 +118,7 @@ export function activate(context: vscode.ExtensionContext) {
 					}
 
 					lastAuthors = collectAuthors(fileTree);
+					void context.workspaceState.update('code-kingdom.lastAuthors', lastAuthors);
 					lastFileTree = fileTree;
 					currentPanel = panel;
 
@@ -387,6 +389,11 @@ function getAuthorColorConfigHtml(authors: string[], colors: AuthorColorMap): st
 <body>
 	<h2>作者颜色配置</h2>
 	<h3>当前项目作者</h3>
+	<div class="unify-row" style="margin-bottom: 16px; padding: 10px; background: var(--vscode-editor-lineHighlightBackground); border-radius: 4px; display: flex; align-items: center; gap: 8px;">
+		<span>统一设置当前所有作者颜色：</span>
+		<input type="color" id="unifyColor" value="#000000">
+		<button id="unifyBtn" class="secondary">一键应用</button>
+	</div>
 	<div id="current"></div>
 	<h3>曾经保存的作者配置信息</h3>
 	<div id="history"></div>
@@ -397,11 +404,15 @@ function getAuthorColorConfigHtml(authors: string[], colors: AuthorColorMap): st
 
 		const currentList = document.getElementById('current');
 		const historyList = document.getElementById('history');
+		const unifyColorInput = document.getElementById('unifyColor');
+		const unifyBtn = document.getElementById('unifyBtn');
+
 		let saveTimer = null;
 
 		function createRow(name, color) {
 			const row = document.createElement('div');
 			row.className = 'row';
+			row.dataset.author = name; // 添加 data 属性方便查找
 
 			const nameInput = document.createElement('input');
 			nameInput.type = 'text';
@@ -410,6 +421,7 @@ function getAuthorColorConfigHtml(authors: string[], colors: AuthorColorMap): st
 
 			const colorInput = document.createElement('input');
 			colorInput.type = 'color';
+			colorInput.className = 'color-input'; // 添加类名方便查找
 			colorInput.value = color || '#4a7bd1';
 
 			nameInput.addEventListener('input', scheduleSave);
@@ -473,6 +485,20 @@ function getAuthorColorConfigHtml(authors: string[], colors: AuthorColorMap): st
 			}
 			saveTimer = setTimeout(saveNow, 150);
 		}
+
+		unifyBtn.addEventListener('click', () => {
+			const targetColor = unifyColorInput.value;
+			const rows = currentList.querySelectorAll('.row');
+			if (rows.length === 0) return;
+
+			rows.forEach(row => {
+				const colorInput = row.querySelector('.color-input');
+				if (colorInput) {
+					colorInput.value = targetColor;
+				}
+			});
+			scheduleSave();
+		});
 
 		render();
 	</script>
