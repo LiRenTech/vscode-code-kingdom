@@ -43,6 +43,7 @@ export function activate(context: vscode.ExtensionContext) {
 				retainContextWhenHidden: true
 			}
 		);
+		panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'resources', 'icon.png');
 
 		// 显示加载消息
 		panel.webview.html = getLoadingHtml();
@@ -159,6 +160,7 @@ export function activate(context: vscode.ExtensionContext) {
 				retainContextWhenHidden: true
 			}
 		);
+		panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'resources', 'icon.png');
 
 		const colors = getAuthorColors(context);
 		panel.webview.html = getAuthorColorConfigHtml(lastAuthors, colors);
