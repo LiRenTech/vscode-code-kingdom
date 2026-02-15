@@ -25,16 +25,23 @@ export interface FileNode {
 }
 
 /**
+ * 获取 Git 仓库根目录
+ */
+export async function getGitRoot(cwd: string): Promise<string | null> {
+	try {
+		const { stdout } = await execFileAsync('git', ['-C', cwd, 'rev-parse', '--show-toplevel']);
+		return stdout.trim();
+	} catch {
+		return null;
+	}
+}
+
+/**
  * 检查目录是否是 git 仓库
  */
 export async function isGitRepository(workspaceFolder: vscode.WorkspaceFolder): Promise<boolean> {
-	const gitPath = path.join(workspaceFolder.uri.fsPath, '.git');
-	try {
-		const stat = await fs.promises.stat(gitPath);
-		return stat.isDirectory() || stat.isFile(); // .git 可能是文件（submodule）或目录
-	} catch {
-		return false;
-	}
+	const root = await getGitRoot(workspaceFolder.uri.fsPath);
+	return !!root;
 }
 
 type IgnoreEntry = {
