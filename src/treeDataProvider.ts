@@ -12,7 +12,7 @@ export class CodeKingdomTreeDataProvider implements vscode.TreeDataProvider<vsco
 		return element;
 	}
 
-	getChildren(element?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
+	getChildren(): Thenable<vscode.TreeItem[]> {
 		// 返回按钮项
 		const mapItem = new vscode.TreeItem('显示开发人员势力图', vscode.TreeItemCollapsibleState.None);
 		mapItem.command = {
