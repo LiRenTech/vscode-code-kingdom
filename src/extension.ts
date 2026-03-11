@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { addBlameInfo, buildFileTree, collectAuthors, getCurrentCommitHash, isGitRepository, type AuthorColorMap, type FileNode } from './fileTree';
+import { addBlameInfo, buildFileTree, collectAuthors, getCurrentCommitHash, getGitFileInventory, isGitRepository, type AuthorColorMap, type FileNode } from './fileTree';
 import { CacheManager } from './cacheManager';
 import { getWebviewContent } from './webviewContent';
 import { CodeKingdomTreeDataProvider } from './treeDataProvider';
@@ -55,15 +55,19 @@ export function activate(context: vscode.ExtensionContext) {
 		try {
 			// 获取当前 commit hash
 			const commitHash = await getCurrentCommitHash(repoRoot);
+			const gitFileInventory = await getGitFileInventory(repoRoot);
+			const hasDirtyFiles = gitFileInventory.dirtyPaths.size > 0;
 			let fileTree: FileNode | null = null;
 			let isCached = false;
 
-			if (commitHash) {
+			if (commitHash && !hasDirtyFiles) {
 				fileTree = await cacheManager.getBlameCache(commitHash);
 				if (fileTree) {
 					isCached = true;
 					console.log(`Using cached blame data for commit ${commitHash}`);
 				}
+			} else if (commitHash) {
+				console.log('Skipping full blame cache because the working tree has uncommitted changes.');
 			}
 
 			if (isCached && fileTree) {
@@ -79,10 +83,11 @@ export function activate(context: vscode.ExtensionContext) {
 				panel.webview.onDidReceiveMessage(
 					message => {
 						switch (message.command) {
-							case 'openFile':
+							case 'openFile': {
 								const fileUri = vscode.Uri.file(message.path);
 								vscode.window.showTextDocument(fileUri);
 								break;
+							}
 						}
 					},
 					undefined,
@@ -106,15 +111,24 @@ export function activate(context: vscode.ExtensionContext) {
 						return;
 					}
 
+					progress.report({ message: '正在加载 blame 缓存...' });
+					const fileBlameCache = await cacheManager.getFileBlameCache();
+
 					progress.report({ message: '正在计算 Git blame...' });
-					await addBlameInfo(fileTree, repoRoot, (done, total, filePath) => {
-						const percent = total > 0 ? Math.round((done / total) * 100) : 0;
-						const name = filePath.split(/[\\/]/).pop() || filePath;
-						progress.report({ message: `Git blame ${percent}% - ${name}` });
+					const nextFileBlameCache = await addBlameInfo(fileTree, repoRoot, {
+						fileCache: fileBlameCache,
+						trackedBlobHashes: gitFileInventory.trackedBlobHashes,
+						dirtyPaths: gitFileInventory.dirtyPaths,
+						onProgress: (done, total, filePath) => {
+							const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+							const name = filePath.split(/[\\/]/).pop() || filePath;
+							progress.report({ message: `Git blame ${percent}% - ${name}` });
+						}
 					});
+					await cacheManager.saveFileBlameCache(nextFileBlameCache);
 
 					// 存入缓存
-					if (commitHash && fileTree) {
+					if (commitHash && fileTree && !hasDirtyFiles) {
 						await cacheManager.saveBlameCache(commitHash, fileTree);
 					}
 
@@ -264,8 +278,12 @@ function sanitizeColorMap(input: unknown): AuthorColorMap {
 	}
 	const result: AuthorColorMap = {};
 	for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-		if (typeof key !== 'string') continue;
-		if (typeof value !== 'string') continue;
+		if (typeof key !== 'string') {
+			continue;
+		}
+		if (typeof value !== 'string') {
+			continue;
+		}
 		result[key] = value;
 	}
 	return result;

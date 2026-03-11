@@ -1,11 +1,17 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import ignore, { type Ignore } from 'ignore';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import type { FileBlameCacheStore } from './cacheManager';
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_BLAME_CONCURRENCY = Math.min(
+	6,
+	Math.max(2, typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length)
+);
 
 export type BlameSegment = {
 	author: string;
@@ -13,6 +19,11 @@ export type BlameSegment = {
 };
 
 export type AuthorColorMap = Record<string, string>;
+
+export type GitFileInventory = {
+	trackedBlobHashes: Map<string, string>;
+	dirtyPaths: Set<string>;
+};
 
 export interface FileNode {
 	name: string;
@@ -214,7 +225,9 @@ function collectFileNodes(root: FileNode): FileNode[] {
 	const stack: FileNode[] = [root];
 	while (stack.length > 0) {
 		const node = stack.pop();
-		if (!node) continue;
+		if (!node) {
+			continue;
+		}
 		if (node.type === 'file') {
 			files.push(node);
 		} else if (node.children) {
@@ -226,27 +239,180 @@ function collectFileNodes(root: FileNode): FileNode[] {
 	return files;
 }
 
+function toRepoRelativePath(repoRoot: string, filePath: string): string {
+	return path.relative(repoRoot, filePath).replace(/\\/g, '/');
+}
+
+async function getTrackedBlobHashes(repoRoot: string): Promise<Map<string, string>> {
+	try {
+		const { stdout } = await execFileAsync('git', ['-C', repoRoot, 'ls-files', '-s', '-z', '--']);
+		const hashes = new Map<string, string>();
+
+		for (const entry of stdout.split('\0')) {
+			if (!entry) {
+				continue;
+			}
+
+			const tabIndex = entry.indexOf('\t');
+			if (tabIndex === -1) {
+				continue;
+			}
+
+			const metadata = entry.slice(0, tabIndex).trim().split(/\s+/);
+			const blobHash = metadata[1];
+			const relativePath = entry.slice(tabIndex + 1);
+			if (!blobHash || !relativePath) {
+				continue;
+			}
+
+			hashes.set(path.join(repoRoot, relativePath), blobHash);
+		}
+
+		return hashes;
+	} catch {
+		return new Map();
+	}
+}
+
+async function readGitPathSet(repoRoot: string, args: string[]): Promise<Set<string>> {
+	try {
+		const { stdout } = await execFileAsync('git', ['-C', repoRoot, ...args]);
+		const paths = new Set<string>();
+		for (const relativePath of stdout.split('\0')) {
+			if (!relativePath) {
+				continue;
+			}
+			paths.add(path.join(repoRoot, relativePath));
+		}
+		return paths;
+	} catch {
+		return new Set();
+	}
+}
+
+export async function getGitFileInventory(repoRoot: string): Promise<GitFileInventory> {
+	const [trackedBlobHashes, unstagedPaths, stagedPaths, untrackedPaths] = await Promise.all([
+		getTrackedBlobHashes(repoRoot),
+		readGitPathSet(repoRoot, ['diff', '--name-only', '-z', '--']),
+		readGitPathSet(repoRoot, ['diff', '--cached', '--name-only', '-z', '--']),
+		readGitPathSet(repoRoot, ['ls-files', '--others', '--exclude-standard', '-z', '--'])
+	]);
+
+	const dirtyPaths = new Set<string>();
+	for (const filePath of unstagedPaths) {
+		dirtyPaths.add(filePath);
+	}
+	for (const filePath of stagedPaths) {
+		dirtyPaths.add(filePath);
+	}
+	for (const filePath of untrackedPaths) {
+		dirtyPaths.add(filePath);
+	}
+
+	return { trackedBlobHashes, dirtyPaths };
+}
+
+async function getFileCacheSignature(
+	filePath: string,
+	trackedBlobHashes: Map<string, string>,
+	dirtyPaths: Set<string>
+): Promise<string> {
+	const blobHash = trackedBlobHashes.get(filePath);
+	if (blobHash && !dirtyPaths.has(filePath)) {
+		return `git:${blobHash}`;
+	}
+
+	const stat = await fs.promises.stat(filePath);
+	return `fs:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+}
+
+async function runWithConcurrency(tasks: Array<() => Promise<void>>, concurrency: number): Promise<void> {
+	let nextIndex = 0;
+	const workerCount = Math.min(Math.max(1, concurrency), tasks.length);
+	const workers = Array.from({ length: workerCount }, async () => {
+		while (nextIndex < tasks.length) {
+			const taskIndex = nextIndex;
+			nextIndex++;
+			await tasks[taskIndex]();
+		}
+	});
+	await Promise.all(workers);
+}
+
+type AddBlameInfoOptions = {
+	onProgress?: (done: number, total: number, filePath: string) => void;
+	fileCache?: FileBlameCacheStore;
+	trackedBlobHashes?: Map<string, string>;
+	dirtyPaths?: Set<string>;
+	concurrency?: number;
+};
+
 export async function addBlameInfo(
 	root: FileNode,
 	repoRoot: string,
-	onProgress?: (done: number, total: number, filePath: string) => void
-): Promise<void> {
+	options: AddBlameInfoOptions = {}
+): Promise<FileBlameCacheStore> {
 	const files = collectFileNodes(root);
 	const total = files.length;
 	let done = 0;
+	const onProgress = options.onProgress;
+	const trackedBlobHashes = options.trackedBlobHashes || new Map<string, string>();
+	const dirtyPaths = options.dirtyPaths || new Set<string>();
+	const hasTrackedInventory = trackedBlobHashes.size > 0;
+	const inputCache = options.fileCache || {};
+	const nextCache: FileBlameCacheStore = {};
+	const blameTasks: Array<() => Promise<void>> = [];
 
 	for (const file of files) {
-		done++;
-		onProgress?.(done, total, file.path);
-
 		if (!file.isText) {
+			done++;
+			onProgress?.(done, total, file.path);
 			continue;
 		}
-		const segments = await getBlameSegments(file.path, repoRoot);
-		if (segments && segments.length > 0) {
-			file.blameSegments = segments;
+
+		const relativePath = toRepoRelativePath(repoRoot, file.path);
+		let signature: string;
+		try {
+			signature = await getFileCacheSignature(file.path, trackedBlobHashes, dirtyPaths);
+		} catch {
+			done++;
+			onProgress?.(done, total, file.path);
+			continue;
 		}
+		const cachedEntry = inputCache[relativePath];
+		if (cachedEntry && cachedEntry.signature === signature) {
+			nextCache[relativePath] = cachedEntry;
+			if (cachedEntry.blameSegments && cachedEntry.blameSegments.length > 0) {
+				file.blameSegments = cachedEntry.blameSegments;
+			}
+			done++;
+			onProgress?.(done, total, file.path);
+			continue;
+		}
+
+		if (hasTrackedInventory && !trackedBlobHashes.has(file.path)) {
+			nextCache[relativePath] = { signature, blameSegments: null };
+			done++;
+			onProgress?.(done, total, file.path);
+			continue;
+		}
+
+		blameTasks.push(async () => {
+			const segments = await getBlameSegments(file.path, repoRoot);
+			if (segments && segments.length > 0) {
+				file.blameSegments = segments;
+			}
+			nextCache[relativePath] = {
+				signature,
+				blameSegments: segments && segments.length > 0 ? segments : null
+			};
+			done++;
+			onProgress?.(done, total, file.path);
+		});
 	}
+
+	await runWithConcurrency(blameTasks, options.concurrency ?? DEFAULT_BLAME_CONCURRENCY);
+	return nextCache;
 }
 
 export function collectAuthors(root: FileNode): string[] {
@@ -254,7 +420,9 @@ export function collectAuthors(root: FileNode): string[] {
 	const stack: FileNode[] = [root];
 	while (stack.length > 0) {
 		const node = stack.pop();
-		if (!node) continue;
+		if (!node) {
+			continue;
+		}
 		if (node.type === 'file' && node.blameSegments) {
 			for (const seg of node.blameSegments) {
 				if (seg.author) {
