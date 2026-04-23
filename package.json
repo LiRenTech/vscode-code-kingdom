@@ -8,7 +8,7 @@
     "url": "https://github.com/LiRenTech/vscode-code-kingdom.git"
   },
   "homepage": "https://github.com/LiRenTech/vscode-code-kingdom",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "icon": "resources/icon.png",
   "engines": {
     "vscode": "^1.74.0"
