@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { addBlameInfo, buildFileTree, collectAuthors, getCurrentCommitHash, isGitRepository, type AuthorColorMap, type FileNode } from './fileTree';
+import { addBlameInfo, buildFileTree, collectAuthors, getCurrentCommitHash, getGitRoot, type AuthorColorMap, type FileNode } from './fileTree';
 import { CacheManager } from './cacheManager';
 import { getWebviewContent } from './webviewContent';
 import { CodeKingdomTreeDataProvider } from './treeDataProvider';
@@ -26,10 +26,43 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		// 检查是否是 git 仓库
-		const isGit = await isGitRepository(workspaceFolder);
-		if (!isGit) {
-			vscode.window.showWarningMessage('当前项目不是 git 仓库，无法显示文件树');
+		let repoRoot: string | undefined;
+		
+		// 尝试使用 VS Code 内置 Git 插件获取仓库列表
+		const repos = await getGitRepositories();
+		
+		if (repos.length > 1) {
+			// 如果有多个仓库，让用户选择
+			const items = repos.map(repo => ({
+				label: repo.rootUri.fsPath.split(/[\\/]/).pop() || repo.rootUri.fsPath,
+				description: repo.rootUri.fsPath,
+				repoRoot: repo.rootUri.fsPath
+			}));
+			
+			const selected = await vscode.window.showQuickPick(items, {
+				placeHolder: '检测到多个 Git 仓库，请选择一个以显示文件树'
+			});
+			
+			if (selected) {
+				repoRoot = selected.repoRoot;
+			} else {
+				// 用户取消选择
+				return;
+			}
+		} else if (repos.length === 1) {
+			// 只有一个仓库，直接使用
+			repoRoot = repos[0].rootUri.fsPath;
+		} else {
+			// 无法通过 API 获取（可能 Git 插件未激活或未发现），回退到手动检测
+			// 检查是否是 git 仓库并获取根目录
+			const gitRoot = await getGitRoot(workspaceFolder.uri.fsPath);
+			if (gitRoot) {
+				repoRoot = gitRoot;
+			}
+		}
+
+		if (!repoRoot) {
+			vscode.window.showWarningMessage('当前项目不是 git 仓库，或无法检测到有效的 Git 仓库');
 			return;
 		}
 
@@ -50,7 +83,6 @@ export function activate(context: vscode.ExtensionContext) {
 
 		// 初始化缓存管理器
 		const cacheManager = new CacheManager(context);
-		const repoRoot = workspaceFolder.uri.fsPath;
 		
 		try {
 			// 获取当前 commit hash
@@ -100,6 +132,7 @@ export function activate(context: vscode.ExtensionContext) {
 				},
 				async progress => {
 					progress.report({ message: '正在构建文件树...' });
+					
 					fileTree = await buildFileTree(workspaceFolder);
 					if (!fileTree) {
 						panel.webview.html = getErrorHtml('无法构建文件树');
@@ -107,7 +140,7 @@ export function activate(context: vscode.ExtensionContext) {
 					}
 
 					progress.report({ message: '正在计算 Git blame...' });
-					await addBlameInfo(fileTree, repoRoot, (done, total, filePath) => {
+					await addBlameInfo(fileTree, repoRoot!, (done, total, filePath) => {
 						const percent = total > 0 ? Math.round((done / total) * 100) : 0;
 						const name = filePath.split(/[\\/]/).pop() || filePath;
 						progress.report({ message: `Git blame ${percent}% - ${name}` });
@@ -187,6 +220,34 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(disposable);
 	context.subscriptions.push(configDisposable);
+}
+
+// === Git Extension Helpers ===
+
+interface GitExtension {
+	getAPI(version: number): GitAPI;
+}
+
+interface GitAPI {
+	repositories: GitRepository[];
+}
+
+interface GitRepository {
+	rootUri: vscode.Uri;
+}
+
+async function getGitRepositories(): Promise<GitRepository[]> {
+	const extension = vscode.extensions.getExtension<GitExtension>('vscode.git');
+	if (!extension) {
+		return [];
+	}
+	
+	if (!extension.isActive) {
+		await extension.activate();
+	}
+	
+	const api = extension.exports.getAPI(1);
+	return api.repositories;
 }
 
 export function deactivate() {}
