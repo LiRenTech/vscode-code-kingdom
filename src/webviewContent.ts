@@ -50,7 +50,7 @@ export function getWebviewContent(fileTree: FileNode, authorColors: Record<strin
 </head>
 <body>
 	<canvas id="canvas"></canvas>
-	<div class="hint">拖拽平移 · 滚轮缩放 · 双击重置</div>
+	<div class="hint">左键单击文件打开 · 右键/中键拖拽平移 · 滚轮缩放 · 双击/中键双击重置</div>
 	<script>
 		const treeData = ${treeJson};
 		const authorColors = ${colorJson};
@@ -68,6 +68,7 @@ export function getWebviewContent(fileTree: FileNode, authorColors: Record<strin
 			textColor: 'rgba(255, 255, 255, 0.7)'
 		};
 
+		const vscode = acquireVsCodeApi();
 		const canvas = document.getElementById('canvas');
 		const ctx = canvas.getContext('2d');
 		const dpr = window.devicePixelRatio || 1;
@@ -78,6 +79,9 @@ export function getWebviewContent(fileTree: FileNode, authorColors: Record<strin
 		let offsetY = 0;
 		let isPanning = false;
 		let panStart = { x: 0, y: 0 };
+
+		// 扁平的文件节点列表，存储绝对世界坐标，用于点击命中检测
+		let clickableFiles = [];
 
 		function resizeCanvas() {
 			const rect = canvas.getBoundingClientRect();
@@ -350,8 +354,20 @@ export function getWebviewContent(fileTree: FileNode, authorColors: Record<strin
 
 		function init() {
 			layoutRoot = computeLayout(treeData);
+			clickableFiles = [];
+			collectClickableNodes(layoutRoot, 0, 0);
 			resizeCanvas();
 			resetView();
+		}
+
+		// 递归收集所有文件节点的绝对世界坐标，用于鼠标点击命中检测
+		function collectClickableNodes(node, absX, absY) {
+			if (node.type === 'file') {
+				clickableFiles.push({ node, x: absX, y: absY, w: node.width, h: node.height });
+			}
+			for (const child of node.children || []) {
+				collectClickableNodes(child, absX + child.x, absY + child.y);
+			}
 		}
 
 		canvas.addEventListener('wheel', (event) => {
@@ -369,7 +385,9 @@ export function getWebviewContent(fileTree: FileNode, authorColors: Record<strin
 			render();
 		}, { passive: false });
 
+		// 右键/中键拖拽平移视野
 		canvas.addEventListener('mousedown', (event) => {
+			if (event.button !== 2 && event.button !== 1) return;
 			isPanning = true;
 			panStart = { x: event.clientX - offsetX, y: event.clientY - offsetY };
 		});
@@ -381,8 +399,58 @@ export function getWebviewContent(fileTree: FileNode, authorColors: Record<strin
 			render();
 		});
 
-		window.addEventListener('mouseup', () => {
-			isPanning = false;
+		window.addEventListener('mouseup', (event) => {
+			if (event.button === 2 || event.button === 1) {
+				isPanning = false;
+			}
+		});
+
+		// 禁用右键菜单，避免拖拽结束时弹出浏览器上下文菜单
+		canvas.addEventListener('contextmenu', (event) => {
+			event.preventDefault();
+		});
+
+		// 中键双击重置视野
+		let lastMiddleClickTime = 0;
+		canvas.addEventListener('mousedown', (event) => {
+			if (event.button !== 1) return;
+			const now = Date.now();
+			if (now - lastMiddleClickTime < 300) {
+				resetView();
+			}
+			lastMiddleClickTime = now;
+		});
+
+		// 左键单击文件矩形，打开对应文件
+		// 通过判断按下到抬起的位移来区分"点击"和"误触拖拽"
+		let leftDownPos = null;
+
+		canvas.addEventListener('mousedown', (event) => {
+			if (event.button !== 0) return;
+			leftDownPos = { x: event.clientX, y: event.clientY };
+		});
+
+		window.addEventListener('mouseup', (event) => {
+			if (event.button !== 0 || !leftDownPos) return;
+			const dx = event.clientX - leftDownPos.x;
+			const dy = event.clientY - leftDownPos.y;
+			leftDownPos = null;
+			// 位移小于 5px 才视为点击
+			if (Math.abs(dx) > 5 || Math.abs(dy) > 5) return;
+
+			const rect = canvas.getBoundingClientRect();
+			const mouseX = event.clientX - rect.left;
+			const mouseY = event.clientY - rect.top;
+			// 转换到世界坐标
+			const worldX = (mouseX - offsetX) / scale;
+			const worldY = (mouseY - offsetY) / scale;
+			for (const item of clickableFiles) {
+				if (worldX >= item.x && worldX <= item.x + item.w &&
+					worldY >= item.y && worldY <= item.y + item.h) {
+					vscode.postMessage({ command: 'openFile', path: item.node.path });
+					break;
+				}
+			}
 		});
 
 		canvas.addEventListener('dblclick', () => {
